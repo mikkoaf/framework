@@ -4,12 +4,14 @@ namespace Illuminate\Tests\Queue;
 
 use Illuminate\Container\Container;
 use Illuminate\Queue\BeanstalkdQueue;
+use Illuminate\Queue\InvalidPayloadException;
 use Illuminate\Queue\Jobs\BeanstalkdJob;
 use Illuminate\Support\Str;
 use Mockery as m;
 use Pheanstalk\Job;
 use Pheanstalk\Pheanstalk;
 use PHPUnit\Framework\TestCase;
+use Throwable;
 
 class QueueBeanstalkdQueueTest extends TestCase
 {
@@ -66,6 +68,36 @@ class QueueBeanstalkdQueueTest extends TestCase
 
         $this->queue->later(5, 'foo', ['data'], 'stack');
         $this->queue->later(5, 'foo', ['data']);
+
+        $this->container->shouldHaveReceived('bound')->with('events')->times(2);
+
+        Str::createUuidsNormally();
+    }
+
+    public function testDelayedPushBeyondRetryUntilFailsOnBeanstalkd()
+    {
+        $uuid = Str::uuid();
+
+        Str::createUuidsUsing(function () use ($uuid) {
+            return $uuid;
+        });
+
+        $this->setQueue('default', 60);
+        $pheanstalk = $this->queue->getPheanstalk();
+        $pheanstalk->shouldReceive('useTube')->once()->with('stack')->andReturn($pheanstalk);
+        $pheanstalk->shouldReceive('useTube')->once()->with('default')->andReturn($pheanstalk);
+        $pheanstalk->shouldReceive('put')->twice()->with(json_encode(['uuid' => $uuid, 'displayName' => 'foo', 'job' => 'foo', 'maxTries' => null, 'maxExceptions' => null, 'failOnTimeout' => false, 'backoff' => null, 'timeout' => null, 'data' => ['data']]), Pheanstalk::DEFAULT_PRIORITY, 5, Pheanstalk::DEFAULT_TTR);
+
+        $mockedJob = m::mock(\Illuminate\Queue\Jobs\Job::class);
+        $mockedJob->shouldReceive('retryUntil')->once()->andReturn(1);
+
+        try {
+            $this->queue->later(5, $mockedJob, ['data'], 'stack');
+        } catch (InvalidPayloadException $exception) {
+            $this->assertEquals('Job set to expire before it is pushed to queue!', $exception->getMessage());
+        } catch (Throwable $unexpectedThrowable) {
+            $this->fail($unexpectedThrowable->getMessage());
+        }
 
         $this->container->shouldHaveReceived('bound')->with('events')->times(2);
 

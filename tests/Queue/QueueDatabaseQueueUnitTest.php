@@ -5,12 +5,15 @@ namespace Illuminate\Tests\Queue;
 use Illuminate\Container\Container;
 use Illuminate\Database\Connection;
 use Illuminate\Queue\DatabaseQueue;
+use Illuminate\Queue\InvalidPayloadException;
+use Illuminate\Queue\Jobs\Job;
 use Illuminate\Queue\Queue;
 use Illuminate\Support\Str;
 use Mockery as m;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 use stdClass;
+use Throwable;
 
 class QueueDatabaseQueueUnitTest extends TestCase
 {
@@ -73,6 +76,41 @@ class QueueDatabaseQueueUnitTest extends TestCase
         $queue->later(10, 'foo', ['data']);
 
         $container->shouldHaveReceived('bound')->with('events')->once();
+
+        Str::createUuidsNormally();
+    }
+
+    public function testDelayedPushBeyondRetryUntilFailsOnDatabase()
+    {
+        $uuid = Str::uuid();
+
+        Str::createUuidsUsing(function () use ($uuid) {
+            return $uuid;
+        });
+
+        $queue = $this->getMockBuilder(
+            DatabaseQueue::class)->onlyMethods(
+            ['currentTime'])->setConstructorArgs(
+            [$database = m::mock(Connection::class), 'table', 'default']
+        )->getMock();
+        $queue->expects($this->any())->method('currentTime')->willReturn('time');
+        $queue->setContainer($container = m::spy(Container::class));
+        $database->shouldReceive('table')->with('table')->andReturn($query = m::mock(stdClass::class));
+        $query->shouldReceive('insertGetId')->never();
+
+        $mockedJob = m::mock(Job::class);
+        $mockedJob->shouldReceive('retryUntil')->twice()->andReturn(1);
+
+
+        try {
+            $queue->later(10, $mockedJob, ['data']);
+        } catch (InvalidPayloadException $exception) {
+            $this->assertEquals('Job set to expire before it is pushed to queue!', $exception->getMessage());
+        } catch (Throwable $unexpectedThrowable) {
+            $this->fail($unexpectedThrowable->getMessage());
+        }
+
+        $container->shouldNotHaveReceived('bound');
 
         Str::createUuidsNormally();
     }

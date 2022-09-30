@@ -89,6 +89,8 @@ class SqsQueue extends Queue implements QueueContract, ClearableQueue
      */
     public function push($job, $data = '', $queue = null)
     {
+        throw_if($this->getJobExpiration($job) !== null && $this->availableAt(null) > $this->getJobExpiration($job),
+            new InvalidPayloadException('Job set to expire before it is pushed to queue!'));
         return $this->enqueueUsing(
             $job,
             $this->createPayload($job, $queue ?: $this->default, $data),
@@ -126,6 +128,8 @@ class SqsQueue extends Queue implements QueueContract, ClearableQueue
      */
     public function later($delay, $job, $data = '', $queue = null)
     {
+        throw_if($this->getJobExpiration($job) !== null && $this->availableAt($delay) > $this->getJobExpiration($job),
+            new InvalidPayloadException('Job set to expire before it is pushed to queue!'));
         return $this->enqueueUsing(
             $job,
             $this->createPayload($job, $queue ?: $this->default, $data),

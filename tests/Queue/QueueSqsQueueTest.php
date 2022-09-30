@@ -5,11 +5,14 @@ namespace Illuminate\Tests\Queue;
 use Aws\Result;
 use Aws\Sqs\SqsClient;
 use Illuminate\Container\Container;
+use Illuminate\Queue\InvalidPayloadException;
+use Illuminate\Queue\Jobs\Job;
 use Illuminate\Queue\Jobs\SqsJob;
 use Illuminate\Queue\SqsQueue;
 use Illuminate\Support\Carbon;
 use Mockery as m;
 use PHPUnit\Framework\TestCase;
+use Throwable;
 
 class QueueSqsQueueTest extends TestCase
 {
@@ -130,6 +133,28 @@ class QueueSqsQueueTest extends TestCase
         $id = $queue->later($this->mockedDelay, $this->mockedJob, $this->mockedData, $this->queueName);
         $this->assertEquals($this->mockedMessageId, $id);
         $container->shouldHaveReceived('bound')->with('events')->once();
+    }
+
+    public function testDelayedPushProperlyFailsWhenJobExpiresBeforeJobExecutionStartsOnSqs()
+    {
+        $mockedJob = m::mock(Job::class);
+        $mockedJob->shouldReceive('retryUntil')->twice()->andReturn(1);
+
+        $queue = $this->getMockBuilder(SqsQueue::class)->onlyMethods(['createPayload', 'secondsUntil', 'getQueue'])->setConstructorArgs([$this->sqs, $this->queueName, $this->account])->getMock();
+        $queue->setContainer($container = m::spy(Container::class));
+        $queue->expects($this->never())->method('createPayload')->with($this->mockedJob, $this->queueName, $this->mockedData)->willReturn($this->mockedPayload);
+        $queue->expects($this->never())->method('secondsUntil')->with($this->mockedDelay)->willReturn($this->mockedDelay);
+        $queue->expects($this->never())->method('getQueue')->with($this->queueName)->willReturn($this->queueUrl);
+        $this->sqs->shouldReceive('sendMessage')->never()->with(['QueueUrl' => $this->queueUrl, 'MessageBody' => $this->mockedPayload, 'DelaySeconds' => $this->mockedDelay])->andReturn($this->mockedSendMessageResponseModel);
+
+        try {
+            $queue->later($this->mockedDelay, $mockedJob, $this->mockedData, $this->queueName);
+        } catch (InvalidPayloadException $exception) {
+            $this->assertEquals('Job set to expire before it is pushed to queue!', $exception->getMessage());
+        } catch (Throwable $unexpectedThrowable) {
+            $this->fail($unexpectedThrowable->getMessage());
+        }
+        $container->shouldNotHaveReceived('bound');
     }
 
     public function testPushProperlyPushesJobOntoSqs()

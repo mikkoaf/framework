@@ -4,6 +4,8 @@ namespace Illuminate\Tests\Queue;
 
 use Illuminate\Container\Container;
 use Illuminate\Contracts\Redis\Factory;
+use Illuminate\Queue\InvalidPayloadException;
+use Illuminate\Queue\Jobs\Job;
 use Illuminate\Queue\LuaScripts;
 use Illuminate\Queue\Queue;
 use Illuminate\Queue\RedisQueue;
@@ -11,6 +13,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 use Mockery as m;
 use PHPUnit\Framework\TestCase;
+use Throwable;
 
 class QueueRedisQueueTest extends TestCase
 {
@@ -148,6 +151,43 @@ class QueueRedisQueueTest extends TestCase
 
         $queue->later($date, 'foo', ['data']);
         $container->shouldHaveReceived('bound')->with('events')->once();
+
+        Str::createUuidsNormally();
+    }
+
+    public function testDelayedPushBeyondRetryUntilFailsOnRedis()
+    {
+        $uuid = Str::uuid();
+
+        Str::createUuidsUsing(function () use ($uuid) {
+            return $uuid;
+        });
+
+        $date = Carbon::now();
+        $queue = $this->getMockBuilder(RedisQueue::class)->onlyMethods(['availableAt', 'getRandomId'])->setConstructorArgs([$redis = m::mock(Factory::class), 'default'])->getMock();
+        $queue->setContainer($container = m::spy(Container::class));
+        $queue->expects($this->never())->method('getRandomId')->willReturn('foo');
+        $queue->expects($this->once())->method('availableAt')->with($date)->willReturn(2);
+
+        $redis->shouldReceive('connection')->never()->andReturn($redis);
+        $redis->shouldReceive('zadd')->never()->with(
+            'queues:default:delayed',
+            2,
+            json_encode(['uuid' => $uuid, 'displayName' => 'foo', 'job' => 'foo', 'maxTries' => null, 'maxExceptions' => null, 'failOnTimeout' => false, 'backoff' => null, 'timeout' => null, 'data' => ['data'], 'id' => 'foo', 'attempts' => 0])
+        );
+
+        $mockedJob = m::mock(Job::class);
+        $mockedJob->shouldReceive('retryUntil')->twice()->andReturn(1);
+
+        try {
+            $queue->later($date, $mockedJob, ['data']);
+        } catch (InvalidPayloadException $exception) {
+            $this->assertEquals('Job set to expire before it is pushed to queue!', $exception->getMessage());
+        } catch (Throwable $unexpectedThrowable) {
+            $this->fail($unexpectedThrowable->getMessage());
+        }
+
+        $container->shouldNotHaveReceived('bound');
 
         Str::createUuidsNormally();
     }

@@ -4,15 +4,19 @@ namespace Illuminate\Support\Testing\Fakes;
 
 use BadMethodCallException;
 use Closure;
+use DateTimeInterface;
 use Illuminate\Contracts\Queue\Queue;
+use Illuminate\Queue\InvalidPayloadException;
 use Illuminate\Queue\QueueManager;
 use Illuminate\Support\Collection;
+use Illuminate\Support\InteractsWithTime;
 use Illuminate\Support\Traits\ReflectsClosures;
 use PHPUnit\Framework\Assert as PHPUnit;
 
 class QueueFake extends QueueManager implements Queue
 {
     use ReflectsClosures;
+    use InteractsWithTime;
 
     /**
      * The original queue manager.
@@ -323,6 +327,8 @@ class QueueFake extends QueueManager implements Queue
      */
     public function push($job, $data = '', $queue = null)
     {
+        throw_if($this->getJobExpiration($job) !== null && $this->availableAt(null) > $this->getJobExpiration($job),
+            new InvalidPayloadException('Job set to expire before it is pushed to queue!'));
         if ($this->shouldFakeJob($job)) {
             $this->jobs[is_object($job) ? get_class($job) : $job][] = [
                 'job' => $job,
@@ -499,5 +505,23 @@ class QueueFake extends QueueManager implements Queue
         throw new BadMethodCallException(sprintf(
             'Call to undefined method %s::%s()', static::class, $method
         ));
+    }
+
+    /**
+     * Get the expiration timestamp for an object-based queue handler.
+     *
+     * @param  mixed  $job
+     * @return mixed
+     */
+    public function getJobExpiration($job)
+    {
+        if (! method_exists($job, 'retryUntil') && ! isset($job->retryUntil)) {
+            return;
+        }
+
+        $expiration = $job->retryUntil ?? $job->retryUntil();
+
+        return $expiration instanceof DateTimeInterface
+            ? $expiration->getTimestamp() : $expiration;
     }
 }
